@@ -1,0 +1,83 @@
+# Sprachen Koll: x2t/libx2tlib.so fuer die Linux-Desktop-App (amd64) bauen, nur per Hand gestartet.
+# Rezept wie die Euro-Office-Releases: Bau-Umgebung = Stufe core-base aus .docker/core.bake.Dockerfile mit
+# PRODUCT=desktop (Ubuntu 22.04), CMake-Schalter der Stufe "core". Gebaut wird nur das Ziel x2t (samt x2tlib).
+# Eingabe "ref": z. B. sk/desktop-9.3.6-ohne-patch oder sk/desktop-9.3.6-mit-patch.
+name: SK Build Linux desktop x2t (amd64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch oder Commit, der gebaut wird
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Platz schaffen (vorinstallierte Werkzeuge, die der Bau nicht braucht)
+        run: |
+          df -h / /mnt
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af
+          sudo mkdir -p /mnt/sk/build /mnt/sk/nuget
+          df -h / /mnt
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          path: core
+
+      - name: Stand festhalten
+        run: |
+          mkdir -p out
+          { echo "ref=${{ inputs.ref }}"; echo "commit=$(git -C core rev-parse HEAD)"; echo "lauf=${{ github.run_id }}"; } | tee out/info.txt
+
+      - name: Bau-Umgebung (core-base, PRODUCT=desktop)
+        run: |
+          DOCKER_BUILDKIT=1 docker build --target core-base --build-arg PRODUCT=desktop \
+            -t sk-core-base-desktop - < core/.docker/core.bake.Dockerfile
+
+      - name: Konfigurieren und x2t bauen
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/core:/core" -v /mnt/sk/build:/build -v /mnt/sk/nuget:/nuget-cache \
+            -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+            sk-core-base-desktop bash -euo pipefail -c '
+              cd /build
+              cmake -GNinja \
+                -DVCPKG_MANIFEST_MODE=ON \
+                -DVCPKG_MANIFEST_DIR=/core \
+                -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
+                -DPYTHON_BIN=$CORE_PYTHON \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_CXX_FLAGS_RELEASE="-O3 -w" \
+                -DCMAKE_C_FLAGS_RELEASE="-O3 -w" \
+                -DEO_CORE_OUTPUT_DIR=/build/package/bin \
+                -DEO_CORE_TOOLS_DIR=/build/package/tools \
+                /core
+              cmake --build . --target x2t
+              cd /build/package/bin
+              strip --strip-unneeded x2t *.so* || true
+              (cd /core && git log -1 --format="%H %s"; gcc --version | head -1; ldd --version | head -1) > /build/package/umgebung.txt
+            '
+
+      - name: Ergebnis zusammenstellen
+        run: |
+          sudo cp -a /mnt/sk/build/package/bin out/bin
+          sudo cp /mnt/sk/build/package/umgebung.txt out/
+          sudo chown -R "$(id -u):$(id -g)" out
+          (cd out/bin && sha256sum * | tee ../sha256.txt)
+          cat out/umgebung.txt
+
+      - name: Hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-linux-desktop
+          path: out/
+          if-no-files-found: error
