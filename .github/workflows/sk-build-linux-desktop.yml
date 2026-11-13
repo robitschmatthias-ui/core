@@ -64,7 +64,7 @@ jobs:
               cmake --build . --target x2t
               cd /build/package/bin
               strip --strip-unneeded x2t *.so* || true
-              (cd /core && git log -1 --format="%H %s"; gcc --version | head -1; ldd --version | head -1) > /build/package/umgebung.txt
+              (cd /core && git log -1 --format="%H %s"; gcc --version | sed -n 1p; ldd --version | sed -n 1p) > /build/package/umgebung.txt
             '
 
       - name: Ergebnis zusammenstellen
